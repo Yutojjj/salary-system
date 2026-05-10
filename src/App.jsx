@@ -663,7 +663,7 @@ export default function App() {
     const effectiveBizDays = ms.businessDays || settings.businessDays || 25;
     const isEmployee = account.type === '社員';
 
-    const getBase = () => {
+    const getRawBase = () => {
       if (isEmployee && ms.baseSalary && ms.baseSalary > 0) return ms.baseSalary;
       return roleMaster[draft.role || account.role]?.base || 0;
     };
@@ -695,15 +695,16 @@ export default function App() {
     let bonusMonthStr = "";
     
     if (isEmployee) {
-      const roleBase = getBase();
+      const rawBase = getRawBase();
       const absenceDays = parseFloat(draft.absence || 0);
       const latenessDays = parseFloat(draft.lateness || 0);
       const roleAllowance = getRoleAllowance();
       
+      // 基本給を日割り計算
+      const roleBase = Math.floor(rawBase * (effectiveBizDays - absenceDays) / effectiveBizDays);
+      
       // 皆勤手当て：遅刻または欠勤が合計1以上なら0円
       const perfectAttendance = (absenceDays + latenessDays) >= 1 ? 0 : 30000;
-      // 欠勤控除：基本給 - 基本給 * (営業日数 - 欠勤日数) / 営業日数
-      const absenceDeduction = roleBase - Math.floor(roleBase * (effectiveBizDays - absenceDays) / effectiveBizDays);
       
       const depAllowance = parseFloat(draft.depAllowance || 0);
       
@@ -740,27 +741,30 @@ export default function App() {
       let othersPlus = 0, othersMinus = 0;
       (draft.others || []).forEach(i => { const a = parseFloat(i.amount || 0); i.type === '+' ? othersPlus += a : othersMinus += a; });
       
-      // ストックから充当（使用）した分は、給与の手取りを増やす（補填する）形で相殺するため支給側にプラス計算します
-      const totalPayment = roleBase + roleAllowance + perfectAttendance + depAllowance + joinBonus + commissionAmount + currentStockUsage + othersPlus;
+      // 支給合計の算出（基本給 + 役職手当 + 皆勤手当 + 扶養手当 + 入社祝金 + 歩合 + その他手当）
+      const totalPayment = roleBase + roleAllowance + perfectAttendance + depAllowance + joinBonus + commissionAmount + othersPlus;
+      
+      // 税金・保険料は純粋な「支給合計」ベースで計算
       const sr = ms.healthInsRate || settings.healthInsRate || 0;
-      // 保険・税金計算時はストック充当分を含めないほうが正確なため、一時的に除外した額で計算
-      const taxablePayment = totalPayment - currentStockUsage; 
-      const healthIns = draft.healthInsUse ? Math.floor(taxablePayment * (sr / 100)) : 0;
-      const withholdingTax = Math.floor((taxablePayment - healthIns) * 0.1);
-      const nursingIns = draft.nursingInsUse ? Math.floor(taxablePayment * ((ms.nursingInsRate || settings.nursingInsRate || 0) / 100)) : 0;
-      const pension = draft.pensionUse ? Math.floor(taxablePayment * ((ms.pensionRate || settings.pensionRate || 0) / 100)) : 0;
-      const empIns = draft.empInsUse ? Math.floor(taxablePayment * ((ms.empInsRate || settings.empInsRate || 0) / 100)) : 0;
+      const healthIns = draft.healthInsUse ? Math.floor(totalPayment * (sr / 100)) : 0;
+      const withholdingTax = Math.floor(totalPayment * 0.1);
+      const nursingIns = draft.nursingInsUse ? Math.floor(totalPayment * ((ms.nursingInsRate || settings.nursingInsRate || 0) / 100)) : 0;
+      const pension = draft.pensionUse ? Math.floor(totalPayment * ((ms.pensionRate || settings.pensionRate || 0) / 100)) : 0;
+      const empIns = draft.empInsUse ? Math.floor(totalPayment * ((ms.empInsRate || settings.empInsRate || 0) / 100)) : 0;
+      
       const dormRent = draft.dormRentUse ? (ms.dormRent || settings.dormRent || 0) : 0;
       const childSupport = parseFloat(draft.childSupport || 0), deposit = parseFloat(draft.deposit || 0);
       const moveOutFee = parseFloat(draft.moveOutFee || 0), dailyAdvance = parseFloat(draft.dailyAdvance || 0);
       
-      // ストック積立（追加徴収）は控除として引きます
-      const totalDeduction = withholdingTax + healthIns + nursingIns + pension + empIns + dormRent + childSupport + deposit + moveOutFee + dailyAdvance + absenceDeduction + currentStockAddition + othersMinus;
+      // 差引合計の算出（源泉 + 各種保険 + 各種天引き + ストック追加徴収 + その他マイナス - ストック充当）
+      const totalDeduction = withholdingTax + healthIns + nursingIns + pension + empIns + dormRent + childSupport + deposit + moveOutFee + dailyAdvance + currentStockAddition + othersMinus - currentStockUsage;
+      
+      // 差引支給額 = 支給合計 - 差引合計
       const netPayment = Math.max(0, totalPayment - totalDeduction);
       
       calc = { 
         attendanceDays: effectiveBizDays - absenceDays, 
-        roleBase, roleAllowance, perfectAttendance, absenceDeduction, depAllowance, joinBonus, commissionAmount, 
+        roleBase, roleAllowance, perfectAttendance, depAllowance, joinBonus, commissionAmount, 
         totalPayment, withholdingTax, healthIns, nursingIns, pension, empIns, dormRent, 
         totalDeduction, netPayment, 
         pastStockBalance, currentStockBalance, stockShortfall 
@@ -850,7 +854,7 @@ export default function App() {
               
               <div><label className={cLbl}>歩合割合 (%)</label><NumInput value={draft.commissionPct} onChange={v => ch('commissionPct', v)} className={cInp} /></div>
               <div><label className={cLbl}>歩合支給額</label><input readOnly value={calc.commissionAmount.toLocaleString() + '円'} className={cRO} /></div>
-              <Sec label="控除" />
+              <Sec label="差引" />
 
               {/* 寮費利用チェックボックス */}
               <div className="col-span-3 mb-1">
@@ -898,7 +902,6 @@ export default function App() {
                 </label>
               ))}
               <div><label className={cLbl}>源泉徴収（自動）</label><input readOnly value={calc.withholdingTax.toLocaleString() + '円'} className={cRO} /></div>
-              <div><label className={cLbl}>欠勤控除（自動）</label><input readOnly value={calc.absenceDeduction.toLocaleString() + '円'} className={cRO} /></div>
               <div><label className={cLbl}>子育て支援金</label><NumInput value={draft.childSupport} onChange={v => ch('childSupport', v)} className={cInp} /></div>
               <div><label className={cLbl}>保証金</label><NumInput value={draft.deposit} onChange={v => ch('deposit', v)} className={cInp} /></div>
               <div><label className={cLbl}>退去費用</label><NumInput value={draft.moveOutFee} onChange={v => ch('moveOutFee', v)} className={cInp} /></div>
@@ -909,7 +912,7 @@ export default function App() {
                   <div key={index} className="flex items-center gap-2">
                     <input type="text" value={item.name} onChange={e => handleCustomItemChange(index, 'name', e.target.value)} className="flex-1 px-2 py-1.5 border border-slate-200 rounded-lg text-sm" placeholder="項目名" />
                     <select value={item.type} onChange={e => handleCustomItemChange(index, 'type', e.target.value)} className="px-2 py-1.5 border border-slate-200 rounded-lg text-sm">
-                      <option value="+">支給(+)</option><option value="-">控除(-)</option>
+                      <option value="+">支給(+)</option><option value="-">差引(-)</option>
                     </select>
                     <NumInput value={item.amount} onChange={v => handleCustomItemChange(index, 'amount', v)} className="w-28 px-2 py-1.5 border border-slate-200 rounded-lg text-sm" placeholder="金額" />
                     <button onClick={(e) => removeCustomItem(e, index)} className="p-1 text-slate-300 hover:text-red-500 rounded-lg"><Trash2 size={14} /></button>
@@ -939,7 +942,7 @@ export default function App() {
               <div><label className={cLbl}>手当（20日以上）</label><input readOnly value={(calc.attendanceAllowance||0).toLocaleString() + '円'} className={cRO} /></div>
               <div><label className={cLbl}>黒字キャスト手当</label><NumInput value={draft.surplusCast} onChange={v => ch('surplusCast', v)} className={cInp} /></div>
               <div><label className={cLbl}>出勤手当（自由）</label><NumInput value={draft.customAttendanceAllowance} onChange={v => ch('customAttendanceAllowance', v)} className={cInp} /></div>
-              <Sec label="控除" />
+              <Sec label="差引" />
               <div><label className={cLbl}>源泉徴収（自動）</label><input readOnly value={(calc.withholdingTax||0).toLocaleString() + '円'} className={cRO} /></div>
               <div><label className={cLbl}>日払い</label><NumInput value={draft.dailyAdvance} onChange={v => ch('dailyAdvance', v)} className={cInp} /></div>
               <Sec label="その他" />
@@ -948,7 +951,7 @@ export default function App() {
                   <div key={index} className="flex items-center gap-2">
                     <input type="text" value={item.name} onChange={e => handleCustomItemChange(index, 'name', e.target.value)} className="flex-1 px-2 py-1.5 border border-slate-200 rounded-lg text-sm" placeholder="項目名" />
                     <select value={item.type} onChange={e => handleCustomItemChange(index, 'type', e.target.value)} className="px-2 py-1.5 border border-slate-200 rounded-lg text-sm">
-                      <option value="+">支給(+)</option><option value="-">控除(-)</option>
+                      <option value="+">支給(+)</option><option value="-">差引(-)</option>
                     </select>
                     <NumInput value={item.amount} onChange={v => handleCustomItemChange(index, 'amount', v)} className="w-28 px-2 py-1.5 border border-slate-200 rounded-lg text-sm" placeholder="金額" />
                     <button onClick={(e) => removeCustomItem(e, index)} className="p-1 text-slate-300 hover:text-red-500 rounded-lg"><Trash2 size={14} /></button>
@@ -965,7 +968,7 @@ export default function App() {
               <p className="text-lg font-bold text-slate-800">{(calc.totalPayment||0).toLocaleString()}<span className="text-xs font-normal ml-0.5">円</span></p>
             </div>
             <div className="p-4 bg-rose-50 text-center border-r border-slate-100">
-              <p className="text-[10px] text-rose-400 mb-1">控除合計</p>
+              <p className="text-[10px] text-rose-400 mb-1">差引合計</p>
               <p className="text-lg font-bold text-rose-600">{(calc.totalDeduction||0).toLocaleString()}<span className="text-xs font-normal ml-0.5">円</span></p>
             </div>
             <div className={`p-4 text-center ${isEmployee ? 'bg-blue-600' : 'bg-purple-600'}`}>
@@ -1020,16 +1023,18 @@ export default function App() {
       let currentStockBalance = 0; // 明細印字用
 
       if (account.type === '社員') {
-        const roleBase = (ms2.baseSalary && ms2.baseSalary > 0) ? ms2.baseSalary : (roleMaster[rec.role || account.role]?.base || 0);
+        const rawBase = (ms2.baseSalary && ms2.baseSalary > 0) ? ms2.baseSalary : (roleMaster[rec.role || account.role]?.base || 0);
         absence = parseFloat(rec.absence || 0);
         paidLeave = parseFloat(rec.paidLeave || 0);
         lateness = parseFloat(rec.lateness || 0);
         const effectiveBizDays = eff.businessDays || 25;
         workDays = effectiveBizDays - absence;
+        
+        // 基本給を日割り計算
+        const roleBase = Math.floor(rawBase * (effectiveBizDays - absence) / effectiveBizDays);
         const roleAllowance = ms2.roleAllowances?.[rec.role || account.role] || parseFloat(rec.roleAllowance || 0);
         
         const perfectAttendance = (absence + lateness) >= 1 ? 0 : 30000;
-        const absenceDeduction = roleBase - Math.floor(roleBase * (effectiveBizDays - absence) / effectiveBizDays);
         
         const depAllowance = parseFloat(rec.depAllowance || 0);
         
@@ -1065,7 +1070,6 @@ export default function App() {
         if (depAllowance > 0) paymentDetails.push({ label: '扶養手当', amount: depAllowance });
         if (joinBonus > 0) paymentDetails.push({ label: '就社祝い金', amount: joinBonus });
         if (commissionAmount > 0) paymentDetails.push({ label: '歩合', amount: commissionAmount });
-        if (currentStockUsage > 0) paymentDetails.push({ label: '寮費ストック充当', amount: currentStockUsage }); // 補填分
 
         let othersPlus = 0, othersMinus = 0;
         (rec.others || []).forEach(item => {
@@ -1073,24 +1077,25 @@ export default function App() {
           if (item.type === '+') { paymentDetails.push({ label: item.name, amount: amt }); othersPlus += amt; }
           else { deductionDetails.push({ label: item.name, amount: amt }); othersMinus += amt; }
         });
-        totalPay = roleBase + roleAllowance + perfectAttendance + depAllowance + joinBonus + commissionAmount + currentStockUsage + othersPlus;
         
-        const taxablePayment = totalPay - currentStockUsage;
-        const healthIns = rec.healthInsUse ? Math.floor(taxablePayment * ((eff.healthInsRate || 0) / 100)) : 0;
-        const withholdingTax = Math.floor((taxablePayment - healthIns) * 0.1);
-        const nursingIns = rec.nursingInsUse ? Math.floor(taxablePayment * ((eff.nursingInsRate || 0) / 100)) : 0;
-        const pension = rec.pensionUse ? Math.floor(taxablePayment * ((eff.pensionRate || 0) / 100)) : 0;
-        const empIns = rec.empInsUse ? Math.floor(taxablePayment * ((eff.empInsRate || 0) / 100)) : 0;
+        // 合計支給額の算出（ストック充当分は除外）
+        totalPay = roleBase + roleAllowance + perfectAttendance + depAllowance + joinBonus + commissionAmount + othersPlus;
+        
+        const healthIns = rec.healthInsUse ? Math.floor(totalPay * ((eff.healthInsRate || 0) / 100)) : 0;
+        const withholdingTax = Math.floor(totalPay * 0.1);
+        const nursingIns = rec.nursingInsUse ? Math.floor(totalPay * ((eff.nursingInsRate || 0) / 100)) : 0;
+        const pension = rec.pensionUse ? Math.floor(totalPay * ((eff.pensionRate || 0) / 100)) : 0;
+        const empIns = rec.empInsUse ? Math.floor(totalPay * ((eff.empInsRate || 0) / 100)) : 0;
         const dormRent = rec.dormRentUse ? (eff.dormRent || 0) : 0;
 
         deductionDetails.push({ label: '所得税', amount: withholdingTax });
-        if (absenceDeduction > 0) deductionDetails.push({ label: '欠勤控除', amount: absenceDeduction });
         if (healthIns > 0) deductionDetails.push({ label: '健康保険', amount: healthIns });
         if (nursingIns > 0) deductionDetails.push({ label: '介護保険', amount: nursingIns });
         if (pension > 0) deductionDetails.push({ label: '厚生年金', amount: pension });
         if (empIns > 0) deductionDetails.push({ label: '雇用保険', amount: empIns });
         if (dormRent > 0) deductionDetails.push({ label: '寮費', amount: dormRent });
         if (currentStockAddition > 0) deductionDetails.push({ label: '寮費ストック積立', amount: currentStockAddition });
+        if (currentStockUsage > 0) deductionDetails.push({ label: '寮費ストック充当', amount: -currentStockUsage });
 
         ['childSupport', 'deposit', 'moveOutFee', 'dailyAdvance'].forEach(k => {
           const v = parseFloat(rec[k] || 0);
@@ -1181,7 +1186,7 @@ export default function App() {
                   <div key={i} className="flex justify-between mb-1"><span>{item.label}</span><span>{item.amount.toLocaleString()}</span></div>
                 ))}
               </div>
-              <div className="flex justify-between p-2 border-t-2 border-black font-bold bg-gray-50 text-sm"><span>控除合計</span><span>{totalDed.toLocaleString()}</span></div>
+              <div className="flex justify-between p-2 border-t-2 border-black font-bold bg-gray-50 text-sm"><span>差引合計</span><span>{totalDed.toLocaleString()}</span></div>
             </div>
           </div>
           
@@ -1273,13 +1278,16 @@ export default function App() {
       const rec = currentRecords[account.id];
       if (!rec) return 0;
       if (account.type === '社員') {
-        const roleBase = (ms.baseSalary && ms.baseSalary > 0) ? ms.baseSalary : (roleMaster[rec.role || account.role]?.base || 0);
+        const rawBase = (ms.baseSalary && ms.baseSalary > 0) ? ms.baseSalary : (roleMaster[rec.role || account.role]?.base || 0);
         const roleAllowance = ms.roleAllowances?.[rec.role || account.role] || parseFloat(rec.roleAllowance || 0);
         const absence = parseFloat(rec.absence || 0);
         const lateness = parseFloat(rec.lateness || 0);
         const perfectAttendance = (absence + lateness) >= 1 ? 0 : 30000;
         const effectiveBizDays = eff.businessDays || 25;
-        const absenceDeduction = roleBase - Math.floor(roleBase * (effectiveBizDays - absence) / effectiveBizDays);
+        
+        // 基本給を日割り計算
+        const roleBase = Math.floor(rawBase * (effectiveBizDays - absence) / effectiveBizDays);
+        
         const depAllowance = parseFloat(rec.depAllowance || 0);
         let joinBonus = 0;
         if (account.joinDate) {
@@ -1299,21 +1307,21 @@ export default function App() {
         });
         
         const currentStockUsage = parseFloat(rec.stockUsage || 0);
-        const totalPay = roleBase + roleAllowance + perfectAttendance + depAllowance + joinBonus + commissionAmount + currentStockUsage + othersPlus;
+        const totalPay = roleBase + roleAllowance + perfectAttendance + depAllowance + joinBonus + commissionAmount + othersPlus;
         
-        const taxablePay = totalPay - currentStockUsage;
-        const healthIns = rec.healthInsUse ? Math.floor(taxablePay * ((eff.healthInsRate || 0) / 100)) : 0;
-        const withholdingTax = Math.floor((taxablePay - healthIns) * 0.1);
-        const nursingIns = rec.nursingInsUse ? Math.floor(taxablePay * ((eff.nursingInsRate || 0) / 100)) : 0;
-        const pension = rec.pensionUse ? Math.floor(taxablePay * ((eff.pensionRate || 0) / 100)) : 0;
-        const empIns = rec.empInsUse ? Math.floor(taxablePay * ((eff.empInsRate || 0) / 100)) : 0;
+        const healthIns = rec.healthInsUse ? Math.floor(totalPay * ((eff.healthInsRate || 0) / 100)) : 0;
+        const withholdingTax = Math.floor(totalPay * 0.1);
+        const nursingIns = rec.nursingInsUse ? Math.floor(totalPay * ((eff.nursingInsRate || 0) / 100)) : 0;
+        const pension = rec.pensionUse ? Math.floor(totalPay * ((eff.pensionRate || 0) / 100)) : 0;
+        const empIns = rec.empInsUse ? Math.floor(totalPay * ((eff.empInsRate || 0) / 100)) : 0;
         const dormRent = rec.dormRentUse ? (eff.dormRent || 0) : 0;
         const childSupport = parseFloat(rec.childSupport || 0);
         const deposit = parseFloat(rec.deposit || 0);
         const moveOutFee = parseFloat(rec.moveOutFee || 0);
         const dailyAdvance = parseFloat(rec.dailyAdvance || 0);
         const currentStockAddition = parseFloat(rec.stockAddition || 0);
-        const totalDed = withholdingTax + healthIns + nursingIns + pension + empIns + dormRent + childSupport + deposit + moveOutFee + dailyAdvance + absenceDeduction + currentStockAddition + othersMinus;
+        
+        const totalDed = withholdingTax + healthIns + nursingIns + pension + empIns + dormRent + childSupport + deposit + moveOutFee + dailyAdvance + currentStockAddition + othersMinus - currentStockUsage;
         return Math.max(0, totalPay - totalDed);
       } else {
         const workingDays = parseFloat(rec.workingDays || 0);
