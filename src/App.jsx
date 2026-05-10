@@ -702,8 +702,8 @@ export default function App() {
       
       // 皆勤手当て：遅刻または欠勤が合計1以上なら0円
       const perfectAttendance = (absenceDays + latenessDays) >= 1 ? 0 : 30000;
-      // 欠勤控除：欠勤日数 * 30000円
-      const absenceDeduction = absenceDays * 30000;
+      // 欠勤控除：基本給 - 基本給 * (営業日数 - 欠勤日数) / 営業日数
+      const absenceDeduction = roleBase - Math.floor(roleBase * (effectiveBizDays - absenceDays) / effectiveBizDays);
       
       const depAllowance = parseFloat(draft.depAllowance || 0);
       
@@ -746,7 +746,7 @@ export default function App() {
       // 保険・税金計算時はストック充当分を含めないほうが正確なため、一時的に除外した額で計算
       const taxablePayment = totalPayment - currentStockUsage; 
       const healthIns = draft.healthInsUse ? Math.floor(taxablePayment * (sr / 100)) : 0;
-      const withholdingTax = Math.floor((taxablePayment - healthIns) * 0.1021);
+      const withholdingTax = Math.floor((taxablePayment - healthIns) * 0.1);
       const nursingIns = draft.nursingInsUse ? Math.floor(taxablePayment * ((ms.nursingInsRate || settings.nursingInsRate || 0) / 100)) : 0;
       const pension = draft.pensionUse ? Math.floor(taxablePayment * ((ms.pensionRate || settings.pensionRate || 0) / 100)) : 0;
       const empIns = draft.empInsUse ? Math.floor(taxablePayment * ((ms.empInsRate || settings.empInsRate || 0) / 100)) : 0;
@@ -778,7 +778,7 @@ export default function App() {
       (draft.others || []).forEach(i => { const a = parseFloat(i.amount || 0); i.type === '+' ? othersPlus += a : othersMinus += a; });
       const basePayment = Math.floor(totalHoursDecimal * finalHourly);
       const totalPayment = basePayment + attendanceAllowance + surplusCast + customAttendanceAllowance + othersPlus;
-      const withholdingTax = Math.floor(totalPayment * 0.1021);
+      const withholdingTax = Math.floor(totalPayment * 0.1);
       const dailyAdvance = parseFloat(draft.dailyAdvance || 0);
       const totalDeduction = withholdingTax + dailyAdvance + othersMinus;
       const netPayment = Math.max(0, totalPayment - totalDeduction);
@@ -1024,11 +1024,12 @@ export default function App() {
         absence = parseFloat(rec.absence || 0);
         paidLeave = parseFloat(rec.paidLeave || 0);
         lateness = parseFloat(rec.lateness || 0);
-        workDays = (eff.businessDays || 25) - absence;
+        const effectiveBizDays = eff.businessDays || 25;
+        workDays = effectiveBizDays - absence;
         const roleAllowance = ms2.roleAllowances?.[rec.role || account.role] || parseFloat(rec.roleAllowance || 0);
         
         const perfectAttendance = (absence + lateness) >= 1 ? 0 : 30000;
-        const absenceDeduction = absence * 30000;
+        const absenceDeduction = roleBase - Math.floor(roleBase * (effectiveBizDays - absence) / effectiveBizDays);
         
         const depAllowance = parseFloat(rec.depAllowance || 0);
         
@@ -1076,7 +1077,7 @@ export default function App() {
         
         const taxablePayment = totalPay - currentStockUsage;
         const healthIns = rec.healthInsUse ? Math.floor(taxablePayment * ((eff.healthInsRate || 0) / 100)) : 0;
-        const withholdingTax = Math.floor((taxablePayment - healthIns) * 0.1021);
+        const withholdingTax = Math.floor((taxablePayment - healthIns) * 0.1);
         const nursingIns = rec.nursingInsUse ? Math.floor(taxablePayment * ((eff.nursingInsRate || 0) / 100)) : 0;
         const pension = rec.pensionUse ? Math.floor(taxablePayment * ((eff.pensionRate || 0) / 100)) : 0;
         const empIns = rec.empInsUse ? Math.floor(taxablePayment * ((eff.empInsRate || 0) / 100)) : 0;
@@ -1125,7 +1126,7 @@ export default function App() {
           else { deductionDetails.push({ label: item.name, amount: amt }); othersMinus += amt; }
         });
         totalPay = basePayment + attendanceAllowance + surplusCast + customAttendanceAllowance + othersPlus;
-        const withholdingTax = Math.floor(totalPay * 0.1021);
+        const withholdingTax = Math.floor(totalPay * 0.1);
         const dailyAdvance = parseFloat(rec.dailyAdvance || 0);
         deductionDetails.push({ label: '所得税', amount: withholdingTax });
         if (dailyAdvance > 0) deductionDetails.push({ label: '日払い', amount: dailyAdvance });
@@ -1277,7 +1278,8 @@ export default function App() {
         const absence = parseFloat(rec.absence || 0);
         const lateness = parseFloat(rec.lateness || 0);
         const perfectAttendance = (absence + lateness) >= 1 ? 0 : 30000;
-        const absenceDeduction = absence * 30000;
+        const effectiveBizDays = eff.businessDays || 25;
+        const absenceDeduction = roleBase - Math.floor(roleBase * (effectiveBizDays - absence) / effectiveBizDays);
         const depAllowance = parseFloat(rec.depAllowance || 0);
         let joinBonus = 0;
         if (account.joinDate) {
@@ -1301,7 +1303,7 @@ export default function App() {
         
         const taxablePay = totalPay - currentStockUsage;
         const healthIns = rec.healthInsUse ? Math.floor(taxablePay * ((eff.healthInsRate || 0) / 100)) : 0;
-        const withholdingTax = Math.floor((taxablePay - healthIns) * 0.1021);
+        const withholdingTax = Math.floor((taxablePay - healthIns) * 0.1);
         const nursingIns = rec.nursingInsUse ? Math.floor(taxablePay * ((eff.nursingInsRate || 0) / 100)) : 0;
         const pension = rec.pensionUse ? Math.floor(taxablePay * ((eff.pensionRate || 0) / 100)) : 0;
         const empIns = rec.empInsUse ? Math.floor(taxablePay * ((eff.empInsRate || 0) / 100)) : 0;
@@ -1333,7 +1335,7 @@ export default function App() {
           if (item.type === '+') othersPlus += amt; else othersMinus += amt;
         });
         const totalPay = Math.floor(totalHoursDecimal * finalHourly) + attendanceAllowance + surplusCast + customAttendanceAllowance + othersPlus;
-        const withholdingTax = Math.floor(totalPay * 0.1021);
+        const withholdingTax = Math.floor(totalPay * 0.1);
         const dailyAdvance = parseFloat(rec.dailyAdvance || 0);
         const totalDed = withholdingTax + dailyAdvance + othersMinus;
         return Math.max(0, totalPay - totalDed);
@@ -1551,7 +1553,12 @@ export default function App() {
               </div>
 
               <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
-                <h2 className="text-sm font-bold text-slate-800 mb-1">全員分 合計金種内訳</h2>
+                <div className="flex items-center justify-between mb-1">
+                  <h2 className="text-sm font-bold text-slate-800">全員分 合計金種内訳</h2>
+                  <div className="text-sm font-bold text-slate-700 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">
+                    両替金合計 (1万円札以外): <span className="text-indigo-600 ml-1">{breakdown.filter(d => d.value !== 10000).reduce((sum, d) => sum + d.value * d.count, 0).toLocaleString()} 円</span>
+                  </div>
+                </div>
                 <p className="text-xs text-slate-400 mb-4">※ 1人ずつ個別に両替した枚数の合計です</p>
                 <div className="grid grid-cols-3 gap-3">
                   {breakdown.map((d, i) => (
