@@ -52,7 +52,55 @@ const shiftMonth = (m, delta) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 };
 
-// ── お釣り計算 ─────────────────────────────────────────────────────────
+// ── 数値入力用カスタムコンポーネント（全角→半角変換、0消去不可対策） ──
+const NumInput = ({ value, onChange, className, placeholder, readOnly }) => {
+  const [local, setLocal] = useState('');
+
+  useEffect(() => {
+    if (value === 0 || value === '0') {
+      setLocal('');
+    } else {
+      setLocal(value !== undefined ? String(value) : '');
+    }
+  }, [value]);
+
+  const handleChange = (e) => {
+    let val = e.target.value;
+    // 全角数字を半角数字に変換し、数字とマイナス・ピリオド以外を削除
+    val = val.replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0))
+             .replace(/[^0-9.-]/g, '');
+    setLocal(val);
+    const num = parseFloat(val);
+    onChange(isNaN(num) ? 0 : num);
+  };
+
+  const handleBlur = () => {
+    let num = parseFloat(local);
+    if (isNaN(num)) num = 0;
+    if (num === 0) {
+      setLocal('');
+      onChange(0);
+    } else {
+      setLocal(String(num));
+      onChange(num);
+    }
+  };
+
+  return (
+    <input
+      type="text"
+      value={local}
+      onChange={handleChange}
+      onBlur={handleBlur}
+      className={className}
+      placeholder={placeholder || "0"}
+      readOnly={readOnly}
+    />
+  );
+};
+
+
+// ── 金種管理（元：お釣り計算） ─────────────────────────────────────────────────────────
 const DENOMINATIONS = [
   { label: '10,000円札', value: 10000 },
   { label: '5,000円札', value: 5000 },
@@ -75,7 +123,7 @@ function breakdownSingle(amount) {
   });
 }
 
-// 複数人の個別両替結果を合算する（合計額をまとめて両替するのではなく、1人ずつ両替した枚数の合計）
+// 複数人の個別両替結果を合算する
 function calcBreakdownByPerson(netAmounts) {
   const totals = new Array(DENOMINATIONS.length).fill(0);
   netAmounts.forEach(amount => {
@@ -89,26 +137,18 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('accounts');
   const [currentMonth, setCurrentMonth] = useState(new Date().toISOString().slice(0, 7));
 
-  // Global settings (legacy – kept for backward compat)
   const [settings, setSettings] = useState({
-    businessDays: 25, totalCommission: 0, dormRent: 0,
+    businessDays: 25, totalCommission: 0, dormRent: 0, dormStockTarget: 0,
     healthInsRate: 0, nursingInsRate: 0, pensionRate: 0, empInsRate: 0,
   });
 
   const [accounts, setAccounts] = useState([]);
   const [monthlyRecords, setMonthlyRecords] = useState({});
-  // { [month]: { businessDays, totalCommission, dormRent, healthInsRate, nursingInsRate, pensionRate, empInsRate,
-  //              baseSalary (社員共通基本給),
-  //              roleAllowances: { roleName: amount }, (社員役職手当)
-  //              partRoleAllowances: { roleName: amount } (アルバイト役職手当)
-  //            } }
   const [monthlySettings, setMonthlySettings] = useState({});
-
-  // Role master (可変)
   const [roleMaster, setRoleMaster] = useState(DEFAULT_ROLE_MASTER);
 
   useEffect(() => {
-    // Firebase Firestoreからリアルタイムでデータを同期
+    // Firebase Firestoreからリアルタイム同期
     const unsub = onSnapshot(doc(db, "salary_data", "main"), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
@@ -135,12 +175,10 @@ export default function App() {
     setAccounts(newAccounts);
     saveAllData({ accounts: newAccounts });
   };
-  
   const saveRecords = (newRecords) => {
     setMonthlyRecords(newRecords);
     saveAllData({ monthlyRecords: newRecords });
   };
-  
   const saveMonthlySettings = (newMs) => {
     setMonthlySettings(newMs);
     const cur = newMs[currentMonth];
@@ -151,19 +189,17 @@ export default function App() {
       saveAllData({ monthlySettings: newMs });
     }
   };
-  
   const saveRoleMaster = (rm) => {
     setRoleMaster(rm);
     saveAllData({ roleMaster: rm });
   };
 
-  // 月別設定取得（継承込み）
   const getMonthSettings = (month) => {
     if (monthlySettings[month]) return monthlySettings[month];
     const prev = shiftMonth(month, -1);
     if (monthlySettings[prev]) return { ...monthlySettings[prev] };
     return {
-      businessDays: 25, totalCommission: 0, dormRent: 0,
+      businessDays: 25, totalCommission: 0, dormRent: 0, dormStockTarget: 0,
       healthInsRate: 0, nursingInsRate: 0, pensionRate: 0, empInsRate: 0,
       baseSalary: 0, roleAllowances: {}, partRoleAllowances: {},
     };
@@ -177,7 +213,7 @@ export default function App() {
     { tab: 'allowances', icon: Star, label: '役職手当設定' },
     { tab: 'input', icon: FileEdit, label: '明細入力' },
     { tab: 'slips', icon: FileText, label: '明細出力' },
-    { tab: 'cash', icon: Banknote, label: 'お釣り計算' },
+    { tab: 'cash', icon: Banknote, label: '金種管理' },
   ];
 
   const pageTitles = {
@@ -186,7 +222,7 @@ export default function App() {
     allowances: '役職手当設定',
     input: '明細入力',
     slips: '明細出力',
-    cash: 'お釣り計算',
+    cash: '金種管理',
   };
 
   // ═══════════════════════════════════════════════════════════
@@ -210,6 +246,7 @@ export default function App() {
         businessDays: parseFloat(local.businessDays) || 0,
         totalCommission: parseFloat(local.totalCommission) || 0,
         dormRent: parseFloat(local.dormRent) || 0,
+        dormStockTarget: parseFloat(local.dormStockTarget) || 0,
         healthInsRate: parseFloat(local.healthInsRate) || 0,
         nursingInsRate: parseFloat(local.nursingInsRate) || 0,
         pensionRate: parseFloat(local.pensionRate) || 0,
@@ -242,20 +279,25 @@ export default function App() {
           <div className="grid grid-cols-2 gap-x-6 gap-y-5">
             <div>
               <label className={lCls}>営業日数 (日)</label>
-              <input type="number" name="businessDays" value={local.businessDays || ''} onChange={ch} className={iCls} />
+              <NumInput value={local.businessDays} onChange={val => setLocal(p => ({...p, businessDays: val}))} className={iCls} />
             </div>
             <div>
               <label className={lCls}>歩合総額 (円)</label>
-              <input type="number" name="totalCommission" value={local.totalCommission || ''} onChange={ch} className={iCls} />
+              <NumInput value={local.totalCommission} onChange={val => setLocal(p => ({...p, totalCommission: val}))} className={iCls} />
             </div>
             <div>
               <label className={lCls}>社員 共通基本給 (円) ※一律設定</label>
-              <input type="number" name="baseSalary" value={local.baseSalary || ''} onChange={ch} className={iCls} placeholder="300000" />
+              <NumInput value={local.baseSalary} onChange={val => setLocal(p => ({...p, baseSalary: val}))} className={iCls} placeholder="300000" />
               <p className="text-xs text-slate-400 mt-1">全社員に適用される月額基本給。ここで設定した額が役職手当に加算されます。</p>
             </div>
             <div>
-              <label className={lCls}>寮家賃 (円)</label>
-              <input type="number" name="dormRent" value={local.dormRent || ''} onChange={ch} className={iCls} />
+              <label className={lCls}>通常 寮家賃 (円)</label>
+              <NumInput value={local.dormRent} onChange={val => setLocal(p => ({...p, dormRent: val}))} className={iCls} />
+            </div>
+            <div className="col-span-2 bg-teal-50 p-4 rounded-xl border border-teal-200">
+              <label className="block text-xs font-bold text-teal-800 mb-1.5">寮費ストック 目標額 (円/人)</label>
+              <NumInput value={local.dormStockTarget} onChange={val => setLocal(p => ({...p, dormStockTarget: val}))} className="w-1/2 px-3 py-2.5 border border-teal-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent bg-white" placeholder="例: 50000" />
+              <p className="text-[11px] text-teal-700 mt-1.5 leading-relaxed">寮利用者が家賃を払えない月に備えた1ヶ月分などの事前ストック目標額です。この目標額に向けて毎月分割または一括で天引きを行い、不足時はここから充当（使用）します。</p>
             </div>
           </div>
 
@@ -270,7 +312,7 @@ export default function App() {
               ].map(({ label, name }) => (
                 <div key={name}>
                   <label className={lCls}>{label}</label>
-                  <input type="number" step="0.01" name={name} value={local[name] || ''} onChange={ch} className={iCls} />
+                  <NumInput value={local[name]} onChange={val => setLocal(p => ({...p, [name]: val}))} className={iCls} />
                 </div>
               ))}
             </div>
@@ -297,6 +339,7 @@ export default function App() {
     const key = empType === '社員' ? 'roleAllowances' : 'partRoleAllowances';
     const [allowances, setAllowances] = useState(() => ms[key] || {});
     const [savedMonth, setSavedMonth] = useState(currentMonth);
+    
     if (savedMonth !== currentMonth) {
       setSavedMonth(currentMonth);
       const fresh = getMonthSettings(currentMonth);
@@ -305,10 +348,9 @@ export default function App() {
 
     const roles = Object.entries(roleMaster).filter(([, d]) => d.type === (empType === '社員' ? '社員' : 'アルバイト'));
 
-    // グループ化: 先頭のアルファベット(大文字)でまとめる
     const groups = {};
     roles.forEach(([k]) => {
-      const g = k.replace(/[0-9]/g, ''); // T1→T, M2→M, a3→a
+      const g = k.replace(/[0-9]/g, '');
       if (!groups[g]) groups[g] = [];
       groups[g].push(k);
     });
@@ -355,18 +397,15 @@ export default function App() {
           <div className="space-y-4">
             {Object.entries(groups).map(([grpKey, members], gi) => (
               <div key={grpKey} className={`rounded-xl border p-4 ${grpColors[gi % grpColors.length]}`}>
-                {/* グループ名 */}
                 <div className={`text-xs font-bold uppercase tracking-widest mb-3 ${grpHdColors[gi % grpHdColors.length]}`}>{grpKey} グループ</div>
-                {/* 横並び: 役職コード + 入力 */}
                 <div className="flex flex-wrap gap-3">
                   {members.map(k => (
                     <div key={k} className="flex flex-col items-center gap-1 min-w-[80px]">
                       <span className="text-xs font-bold font-mono text-slate-600 bg-white px-2 py-0.5 rounded-md border border-slate-200">{k}</span>
                       <div className="relative w-[80px]">
-                        <input
-                          type="number"
-                          value={allowances[k] !== undefined ? allowances[k] : ''}
-                          onChange={e => setAllowances(prev => ({ ...prev, [k]: e.target.value }))}
+                        <NumInput
+                          value={allowances[k]}
+                          onChange={val => setAllowances(prev => ({ ...prev, [k]: val }))}
                           className="w-full px-2 py-1.5 border border-slate-200 rounded-lg text-sm text-right focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-white"
                           placeholder="0"
                         />
@@ -611,13 +650,13 @@ export default function App() {
     );
   };
 
-  // ─── 個別入力フォーム（コンパクト3列・モーダル対応） ─────────────────
+  // ─── 個別入力フォーム ─────────────────
   const MemberInputForm = ({ account, currentMonth, monthlyRecords, currentSettings, settings, roleMaster, onSave, onClose }) => {
     const savedRecord = (monthlyRecords[currentMonth] || {})[account.id];
     const prevMonth = shiftMonth(currentMonth, -1);
     const prevRecord = (monthlyRecords[prevMonth] || {})[account.id] || {};
     const [draft, setDraft] = useState(() => savedRecord || {
-      ...prevRecord, absence: 0, paidLeave: 0, lateness: 0, workingDays: 0, hours: 0, minutes: 0,
+      ...prevRecord, absence: 0, paidLeave: 0, lateness: 0, workingDays: 0, hours: 0, minutes: 0, stockAddition: 0, stockUsage: 0
     });
     const [notify, setNotify] = useState(false);
     const ms = currentSettings;
@@ -652,34 +691,80 @@ export default function App() {
     );
 
     let calc = {};
+    let isEligibleForBonus = false;
+    let bonusMonthStr = "";
+    
     if (isEmployee) {
       const roleBase = getBase();
       const absenceDays = parseFloat(draft.absence || 0);
+      const latenessDays = parseFloat(draft.lateness || 0);
       const roleAllowance = getRoleAllowance();
-      const perfectAttendance = absenceDays === 0 ? 30000 : 0;
+      
+      // 皆勤手当て：遅刻または欠勤が合計1以上なら0円
+      const perfectAttendance = (absenceDays + latenessDays) >= 1 ? 0 : 30000;
+      // 欠勤控除：欠勤日数 * 30000円
+      const absenceDeduction = absenceDays * 30000;
+      
       const depAllowance = parseFloat(draft.depAllowance || 0);
+      
+      // 就社祝い金の判定
       let joinBonus = 0;
-      if (account.joinDate && draft.bonusType) {
+      if (account.joinDate) {
         const jd = new Date(account.joinDate), cmd = new Date(currentMonth + '-01');
         const md = (cmd.getFullYear() - jd.getFullYear()) * 12 + cmd.getMonth() - jd.getMonth();
-        if (draft.bonusType === '5万×6ヶ月' && md >= 0 && md < 6) joinBonus = 50000;
-        else if (draft.bonusType === '半年後に30万' && md === 6) joinBonus = 300000;
+        if (md >= 0 && md <= 5) {
+          isEligibleForBonus = true;
+          bonusMonthStr = `${md + 1}ヶ月目`;
+          if (draft.bonusType === '5万×6ヶ月') joinBonus = 50000;
+          else if (draft.bonusType === '半年後に30万' && md === 5) joinBonus = 300000;
+        }
       }
+
+      // 寮費ストック（前払準備金）の計算ロジック
+      const targetStock = ms.dormStockTarget || settings.dormStockTarget || 0;
+      let pastStockAddition = 0;
+      let pastStockUsage = 0;
+      Object.keys(monthlyRecords).forEach(m => {
+        if (m < currentMonth && monthlyRecords[m][account.id]) {
+          pastStockAddition += parseFloat(monthlyRecords[m][account.id].stockAddition || 0);
+          pastStockUsage += parseFloat(monthlyRecords[m][account.id].stockUsage || 0);
+        }
+      });
+      const pastStockBalance = pastStockAddition - pastStockUsage;
+      const currentStockAddition = parseFloat(draft.stockAddition || 0);
+      const currentStockUsage = parseFloat(draft.stockUsage || 0);
+      const currentStockBalance = pastStockBalance + currentStockAddition - currentStockUsage;
+      const stockShortfall = Math.max(0, targetStock - currentStockBalance);
+      
       const commissionAmount = Math.floor((ms.totalCommission || settings.totalCommission || 0) * (parseFloat(draft.commissionPct || 0) / 100));
       let othersPlus = 0, othersMinus = 0;
       (draft.others || []).forEach(i => { const a = parseFloat(i.amount || 0); i.type === '+' ? othersPlus += a : othersMinus += a; });
-      const totalPayment = roleBase + roleAllowance + perfectAttendance + depAllowance + joinBonus + commissionAmount + othersPlus;
+      
+      // ストックから充当（使用）した分は、給与の手取りを増やす（補填する）形で相殺するため支給側にプラス計算します
+      const totalPayment = roleBase + roleAllowance + perfectAttendance + depAllowance + joinBonus + commissionAmount + currentStockUsage + othersPlus;
       const sr = ms.healthInsRate || settings.healthInsRate || 0;
-      const healthIns = draft.healthInsUse ? Math.floor(totalPayment * (sr / 100)) : 0;
-      const withholdingTax = Math.floor((totalPayment - healthIns) * 0.1021);
-      const nursingIns = draft.nursingInsUse ? Math.floor(totalPayment * ((ms.nursingInsRate || settings.nursingInsRate || 0) / 100)) : 0;
-      const pension = draft.pensionUse ? Math.floor(totalPayment * ((ms.pensionRate || settings.pensionRate || 0) / 100)) : 0;
-      const empIns = draft.empInsUse ? Math.floor(totalPayment * ((ms.empInsRate || settings.empInsRate || 0) / 100)) : 0;
+      // 保険・税金計算時はストック充当分を含めないほうが正確なため、一時的に除外した額で計算
+      const taxablePayment = totalPayment - currentStockUsage; 
+      const healthIns = draft.healthInsUse ? Math.floor(taxablePayment * (sr / 100)) : 0;
+      const withholdingTax = Math.floor((taxablePayment - healthIns) * 0.1021);
+      const nursingIns = draft.nursingInsUse ? Math.floor(taxablePayment * ((ms.nursingInsRate || settings.nursingInsRate || 0) / 100)) : 0;
+      const pension = draft.pensionUse ? Math.floor(taxablePayment * ((ms.pensionRate || settings.pensionRate || 0) / 100)) : 0;
+      const empIns = draft.empInsUse ? Math.floor(taxablePayment * ((ms.empInsRate || settings.empInsRate || 0) / 100)) : 0;
       const dormRent = draft.dormRentUse ? (ms.dormRent || settings.dormRent || 0) : 0;
       const childSupport = parseFloat(draft.childSupport || 0), deposit = parseFloat(draft.deposit || 0);
       const moveOutFee = parseFloat(draft.moveOutFee || 0), dailyAdvance = parseFloat(draft.dailyAdvance || 0);
-      const totalDeduction = withholdingTax + healthIns + nursingIns + pension + empIns + dormRent + childSupport + deposit + moveOutFee + dailyAdvance + othersMinus;
-      calc = { attendanceDays: effectiveBizDays - absenceDays, roleBase, roleAllowance, perfectAttendance, depAllowance, joinBonus, commissionAmount, totalPayment, withholdingTax, healthIns, nursingIns, pension, empIns, dormRent, totalDeduction, netPayment: totalPayment - totalDeduction };
+      
+      // ストック積立（追加徴収）は控除として引きます
+      const totalDeduction = withholdingTax + healthIns + nursingIns + pension + empIns + dormRent + childSupport + deposit + moveOutFee + dailyAdvance + absenceDeduction + currentStockAddition + othersMinus;
+      const netPayment = Math.max(0, totalPayment - totalDeduction);
+      
+      calc = { 
+        attendanceDays: effectiveBizDays - absenceDays, 
+        roleBase, roleAllowance, perfectAttendance, absenceDeduction, depAllowance, joinBonus, commissionAmount, 
+        totalPayment, withholdingTax, healthIns, nursingIns, pension, empIns, dormRent, 
+        totalDeduction, netPayment, 
+        pastStockBalance, currentStockBalance, stockShortfall 
+      };
     } else {
       const workingDays = parseFloat(draft.workingDays || 0);
       const currentRecs = monthlyRecords[currentMonth] || {};
@@ -696,7 +781,8 @@ export default function App() {
       const withholdingTax = Math.floor(totalPayment * 0.1021);
       const dailyAdvance = parseFloat(draft.dailyAdvance || 0);
       const totalDeduction = withholdingTax + dailyAdvance + othersMinus;
-      calc = { validReferralsCount, finalHourly, attendanceAllowance, basePayment, totalPayment, withholdingTax, totalDeduction, netPayment: totalPayment - totalDeduction };
+      const netPayment = Math.max(0, totalPayment - totalDeduction);
+      calc = { validReferralsCount, finalHourly, attendanceAllowance, basePayment, totalPayment, withholdingTax, totalDeduction, netPayment };
     }
 
     return (
@@ -747,24 +833,63 @@ export default function App() {
               <div><label className={cLbl}>基本給</label><input readOnly value={calc.roleBase.toLocaleString() + '円'} className={cRO} /></div>
               <div><label className={cLbl}>役職手当（自動）</label><input readOnly value={calc.roleAllowance.toLocaleString() + '円'} className={cRO} /></div>
               <div><label className={cLbl}>皆勤手当（自動）</label><input readOnly value={calc.perfectAttendance.toLocaleString() + '円'} className={cRO} /></div>
-              <div><label className={cLbl}>扶養手当</label><input type="number" value={draft.depAllowance || 0} onChange={e => ch('depAllowance', e.target.value)} className={cInp} /></div>
-              <div><label className={cLbl}>入社祝金プラン</label>
-                <select value={draft.bonusType || ''} onChange={e => ch('bonusType', e.target.value)} className={cInp}>
-                  <option value="">なし</option>
-                  <option value="5万×6ヶ月">5万×6ヶ月</option>
-                  <option value="半年後に30万">半年後に30万</option>
-                </select>
-              </div>
-              <div><label className={cLbl}>祝金反映額</label><input readOnly value={calc.joinBonus.toLocaleString() + '円'} className={cRO} /></div>
-              <div><label className={cLbl}>歩合割合 (%)</label><input type="number" step="0.1" value={draft.commissionPct || 0} onChange={e => ch('commissionPct', e.target.value)} className={cInp} /></div>
+              <div><label className={cLbl}>扶養手当</label><NumInput value={draft.depAllowance} onChange={v => ch('depAllowance', v)} className={cInp} /></div>
+              
+              {isEligibleForBonus && (
+                <>
+                  <div><label className={cLbl}>就社祝い金プラン ({bonusMonthStr})</label>
+                    <select value={draft.bonusType || ''} onChange={e => ch('bonusType', e.target.value)} className={cInp}>
+                      <option value="">なし</option>
+                      <option value="5万×6ヶ月">5万×6ヶ月</option>
+                      <option value="半年後に30万">半年後に30万</option>
+                    </select>
+                  </div>
+                  <div><label className={cLbl}>祝金反映額</label><input readOnly value={calc.joinBonus.toLocaleString() + '円'} className={cRO} /></div>
+                </>
+              )}
+              
+              <div><label className={cLbl}>歩合割合 (%)</label><NumInput value={draft.commissionPct} onChange={v => ch('commissionPct', v)} className={cInp} /></div>
               <div><label className={cLbl}>歩合支給額</label><input readOnly value={calc.commissionAmount.toLocaleString() + '円'} className={cRO} /></div>
               <Sec label="控除" />
+
+              {/* 寮費利用チェックボックス */}
+              <div className="col-span-3 mb-1">
+                <label className="flex items-center gap-2 p-2 rounded-lg border border-slate-100 hover:bg-slate-50 cursor-pointer w-1/3">
+                  <input type="checkbox" checked={draft.dormRentUse || false} onChange={e => ch('dormRentUse', e.target.checked)} className="accent-indigo-600 w-3.5 h-3.5" />
+                  <span className="text-xs font-bold text-slate-800 flex-1">寮を利用している</span>
+                  <span className="text-xs font-medium text-slate-500">{(calc.dormRent||0).toLocaleString()}円</span>
+                </label>
+              </div>
+
+              {/* 寮費ストック管理パネル */}
+              {draft.dormRentUse && (
+                <div className="col-span-3 bg-teal-50 px-4 py-3 rounded-xl border border-teal-200 mt-1 mb-3">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs font-bold text-teal-800 tracking-wider">【寮費ストック（前払準備金）】</span>
+                    <span className="text-[11px] font-bold text-teal-700 bg-teal-100 px-2.5 py-0.5 rounded-full">
+                      目標: {(ms.dormStockTarget || settings.dormStockTarget || 0).toLocaleString()}円 / 
+                      現在の残高: {calc.currentStockBalance.toLocaleString()}円 (完済まで: {calc.stockShortfall.toLocaleString()}円)
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <div className="flex-1 flex items-center gap-2">
+                      <label className={cLbl + " !mb-0 w-32 text-teal-900"}>今月 追加徴収する額</label>
+                      <NumInput value={draft.stockAddition} onChange={v => ch('stockAddition', v)} className={cInp + " flex-1 !border-teal-300 focus:!ring-teal-500"} placeholder="一括・分割の天引き額" />
+                    </div>
+                    <div className="flex-1 flex items-center gap-2">
+                      <label className={cLbl + " !mb-0 w-32 text-rose-900"}>今月 ストックから払う額</label>
+                      <NumInput value={draft.stockUsage} onChange={v => ch('stockUsage', v)} className={cInp + " flex-1 !border-rose-300 focus:!ring-rose-500"} placeholder="寮費不足時に使用する額" />
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-teal-600 mt-2">※給与から天引きしてストックを貯める場合は「追加徴収」に、給与が足りずストックから寮費を補填する場合は「ストックから払う額」に入力してください。自動的に残高に反映されます。</p>
+                </div>
+              )}
+
               {[
                 { key: 'healthInsUse', label: '健康保険', val: calc.healthIns },
                 { key: 'nursingInsUse', label: '介護保険', val: calc.nursingIns },
                 { key: 'pensionUse', label: '厚生年金', val: calc.pension },
                 { key: 'empInsUse', label: '雇用保険', val: calc.empIns },
-                { key: 'dormRentUse', label: '寮家賃', val: calc.dormRent },
               ].map(({ key, label, val }) => (
                 <label key={key} className="flex items-center gap-2 p-2 rounded-lg border border-slate-100 hover:bg-slate-50 cursor-pointer">
                   <input type="checkbox" checked={draft[key] || false} onChange={e => ch(key, e.target.checked)} className="accent-indigo-600 w-3.5 h-3.5" />
@@ -773,10 +898,11 @@ export default function App() {
                 </label>
               ))}
               <div><label className={cLbl}>源泉徴収（自動）</label><input readOnly value={calc.withholdingTax.toLocaleString() + '円'} className={cRO} /></div>
-              <div><label className={cLbl}>子育て支援金</label><input type="number" value={draft.childSupport || 0} onChange={e => ch('childSupport', e.target.value)} className={cInp} /></div>
-              <div><label className={cLbl}>保証金</label><input type="number" value={draft.deposit || 0} onChange={e => ch('deposit', e.target.value)} className={cInp} /></div>
-              <div><label className={cLbl}>退去費用</label><input type="number" value={draft.moveOutFee || 0} onChange={e => ch('moveOutFee', e.target.value)} className={cInp} /></div>
-              <div><label className={cLbl}>日払い</label><input type="number" value={draft.dailyAdvance || 0} onChange={e => ch('dailyAdvance', e.target.value)} className={cInp} /></div>
+              <div><label className={cLbl}>欠勤控除（自動）</label><input readOnly value={calc.absenceDeduction.toLocaleString() + '円'} className={cRO} /></div>
+              <div><label className={cLbl}>子育て支援金</label><NumInput value={draft.childSupport} onChange={v => ch('childSupport', v)} className={cInp} /></div>
+              <div><label className={cLbl}>保証金</label><NumInput value={draft.deposit} onChange={v => ch('deposit', v)} className={cInp} /></div>
+              <div><label className={cLbl}>退去費用</label><NumInput value={draft.moveOutFee} onChange={v => ch('moveOutFee', v)} className={cInp} /></div>
+              <div><label className={cLbl}>日払い</label><NumInput value={draft.dailyAdvance} onChange={v => ch('dailyAdvance', v)} className={cInp} /></div>
               <Sec label="その他" />
               <div className="col-span-3 space-y-2">
                 {(draft.others || []).map((item, index) => (
@@ -785,7 +911,7 @@ export default function App() {
                     <select value={item.type} onChange={e => handleCustomItemChange(index, 'type', e.target.value)} className="px-2 py-1.5 border border-slate-200 rounded-lg text-sm">
                       <option value="+">支給(+)</option><option value="-">控除(-)</option>
                     </select>
-                    <input type="number" value={item.amount} onChange={e => handleCustomItemChange(index, 'amount', e.target.value)} className="w-28 px-2 py-1.5 border border-slate-200 rounded-lg text-sm" placeholder="金額" />
+                    <NumInput value={item.amount} onChange={v => handleCustomItemChange(index, 'amount', v)} className="w-28 px-2 py-1.5 border border-slate-200 rounded-lg text-sm" placeholder="金額" />
                     <button onClick={(e) => removeCustomItem(e, index)} className="p-1 text-slate-300 hover:text-red-500 rounded-lg"><Trash2 size={14} /></button>
                   </div>
                 ))}
@@ -800,8 +926,8 @@ export default function App() {
                   {Object.entries(roleMaster).filter(([,d]) => d.type === 'アルバイト').map(([k]) => <option key={k} value={k}>{k}</option>)}
                 </select>
               </div>
-              <div><label className={cLbl}>勤務日数</label><input type="number" value={draft.workingDays || 0} onChange={e => ch('workingDays', e.target.value)} className={cInp} /></div>
-              <div><label className={cLbl}>勤務時間（時）</label><input type="number" min="0" value={draft.hours || 0} onChange={e => ch('hours', e.target.value)} className={cInp} /></div>
+              <div><label className={cLbl}>勤務日数</label><NumInput value={draft.workingDays} onChange={v => ch('workingDays', v)} className={cInp} /></div>
+              <div><label className={cLbl}>勤務時間（時）</label><NumInput value={draft.hours} onChange={v => ch('hours', v)} className={cInp} /></div>
               <div><label className={cLbl}>勤務時間（分）</label>
                 <select value={draft.minutes || 0} onChange={e => ch('minutes', e.target.value)} className={cInp}>
                   {[0,5,10,15,20,25,30,35,40,45,50,55].map(m => <option key={m} value={m}>{m}分</option>)}
@@ -811,11 +937,11 @@ export default function App() {
               <Sec label="支給" />
               <div><label className={cLbl}>基本給（時給×時間）</label><input readOnly value={(calc.basePayment||0).toLocaleString() + '円'} className={cRO} /></div>
               <div><label className={cLbl}>手当（20日以上）</label><input readOnly value={(calc.attendanceAllowance||0).toLocaleString() + '円'} className={cRO} /></div>
-              <div><label className={cLbl}>黒字キャスト手当</label><input type="number" value={draft.surplusCast || 0} onChange={e => ch('surplusCast', e.target.value)} className={cInp} /></div>
-              <div><label className={cLbl}>出勤手当（自由）</label><input type="number" value={draft.customAttendanceAllowance || 0} onChange={e => ch('customAttendanceAllowance', e.target.value)} className={cInp} /></div>
+              <div><label className={cLbl}>黒字キャスト手当</label><NumInput value={draft.surplusCast} onChange={v => ch('surplusCast', v)} className={cInp} /></div>
+              <div><label className={cLbl}>出勤手当（自由）</label><NumInput value={draft.customAttendanceAllowance} onChange={v => ch('customAttendanceAllowance', v)} className={cInp} /></div>
               <Sec label="控除" />
               <div><label className={cLbl}>源泉徴収（自動）</label><input readOnly value={(calc.withholdingTax||0).toLocaleString() + '円'} className={cRO} /></div>
-              <div><label className={cLbl}>日払い</label><input type="number" value={draft.dailyAdvance || 0} onChange={e => ch('dailyAdvance', e.target.value)} className={cInp} /></div>
+              <div><label className={cLbl}>日払い</label><NumInput value={draft.dailyAdvance} onChange={v => ch('dailyAdvance', v)} className={cInp} /></div>
               <Sec label="その他" />
               <div className="col-span-3 space-y-2">
                 {(draft.others || []).map((item, index) => (
@@ -824,7 +950,7 @@ export default function App() {
                     <select value={item.type} onChange={e => handleCustomItemChange(index, 'type', e.target.value)} className="px-2 py-1.5 border border-slate-200 rounded-lg text-sm">
                       <option value="+">支給(+)</option><option value="-">控除(-)</option>
                     </select>
-                    <input type="number" value={item.amount} onChange={e => handleCustomItemChange(index, 'amount', e.target.value)} className="w-28 px-2 py-1.5 border border-slate-200 rounded-lg text-sm" placeholder="金額" />
+                    <NumInput value={item.amount} onChange={v => handleCustomItemChange(index, 'amount', v)} className="w-28 px-2 py-1.5 border border-slate-200 rounded-lg text-sm" placeholder="金額" />
                     <button onClick={(e) => removeCustomItem(e, index)} className="p-1 text-slate-300 hover:text-red-500 rounded-lg"><Trash2 size={14} /></button>
                   </div>
                 ))}
@@ -873,7 +999,6 @@ export default function App() {
     const currentRecords = monthlyRecords[currentMonth] || {};
     const filtered = accounts.filter(a => a.type === empType && currentRecords[a.id]);
 
-    // 過去12か月の個人レコード
     const getPast12Months = () => {
       const months = [];
       for (let i = 0; i < 12; i++) {
@@ -892,6 +1017,7 @@ export default function App() {
       let paymentDetails = [], deductionDetails = [];
       let totalPay = 0, totalDed = 0, net = 0;
       let workDays = 0, absence = 0, lateness = 0, paidLeave = 0, workHoursLabel = '';
+      let currentStockBalance = 0; // 明細印字用
 
       if (account.type === '社員') {
         const roleBase = (ms2.baseSalary && ms2.baseSalary > 0) ? ms2.baseSalary : (roleMaster[rec.role || account.role]?.base || 0);
@@ -900,49 +1026,78 @@ export default function App() {
         lateness = parseFloat(rec.lateness || 0);
         workDays = (eff.businessDays || 25) - absence;
         const roleAllowance = ms2.roleAllowances?.[rec.role || account.role] || parseFloat(rec.roleAllowance || 0);
-        const perfectAttendance = absence === 0 ? 30000 : 0;
+        
+        const perfectAttendance = (absence + lateness) >= 1 ? 0 : 30000;
+        const absenceDeduction = absence * 30000;
+        
         const depAllowance = parseFloat(rec.depAllowance || 0);
+        
         let joinBonus = 0;
-        if (account.joinDate && rec.bonusType) {
+        if (account.joinDate) {
           const joinDate = new Date(account.joinDate);
           const cmd = new Date(month + '-01');
           const md = (cmd.getFullYear() - joinDate.getFullYear()) * 12 + cmd.getMonth() - joinDate.getMonth();
-          if (rec.bonusType === '5万×6ヶ月' && md >= 0 && md < 6) joinBonus = 50000;
-          else if (rec.bonusType === '半年後に30万' && md === 6) joinBonus = 300000;
+          if (md >= 0 && md <= 5) {
+            if (rec.bonusType === '5万×6ヶ月') joinBonus = 50000;
+            else if (rec.bonusType === '半年後に30万' && md === 5) joinBonus = 300000;
+          }
         }
+        
         const commissionAmount = Math.floor((eff.totalCommission || 0) * (parseFloat(rec.commissionPct || 0) / 100));
+
+        // ストック計算ロジック
+        let pastStockAddition = 0;
+        let pastStockUsage = 0;
+        Object.keys(monthlyRecords).forEach(m => {
+          if (m <= month && monthlyRecords[m][account.id]) { // 当月分まで合算
+            pastStockAddition += parseFloat(monthlyRecords[m][account.id].stockAddition || 0);
+            pastStockUsage += parseFloat(monthlyRecords[m][account.id].stockUsage || 0);
+          }
+        });
+        currentStockBalance = pastStockAddition - pastStockUsage;
+        const currentStockAddition = parseFloat(rec.stockAddition || 0);
+        const currentStockUsage = parseFloat(rec.stockUsage || 0);
+
         paymentDetails.push({ label: '基本給', amount: roleBase });
         if (roleAllowance > 0) paymentDetails.push({ label: '役職手当', amount: roleAllowance });
         if (perfectAttendance > 0) paymentDetails.push({ label: '皆勤手当', amount: perfectAttendance });
         if (depAllowance > 0) paymentDetails.push({ label: '扶養手当', amount: depAllowance });
-        if (joinBonus > 0) paymentDetails.push({ label: '入社祝金', amount: joinBonus });
+        if (joinBonus > 0) paymentDetails.push({ label: '就社祝い金', amount: joinBonus });
         if (commissionAmount > 0) paymentDetails.push({ label: '歩合', amount: commissionAmount });
+        if (currentStockUsage > 0) paymentDetails.push({ label: '寮費ストック充当', amount: currentStockUsage }); // 補填分
+
         let othersPlus = 0, othersMinus = 0;
         (rec.others || []).forEach(item => {
           const amt = parseFloat(item.amount || 0);
           if (item.type === '+') { paymentDetails.push({ label: item.name, amount: amt }); othersPlus += amt; }
           else { deductionDetails.push({ label: item.name, amount: amt }); othersMinus += amt; }
         });
-        totalPay = roleBase + roleAllowance + perfectAttendance + depAllowance + joinBonus + commissionAmount + othersPlus;
-        const healthIns = rec.healthInsUse ? Math.floor(totalPay * ((eff.healthInsRate || 0) / 100)) : 0;
-        const withholdingTax = Math.floor((totalPay - healthIns) * 0.1021);
-        const nursingIns = rec.nursingInsUse ? Math.floor(totalPay * ((eff.nursingInsRate || 0) / 100)) : 0;
-        const pension = rec.pensionUse ? Math.floor(totalPay * ((eff.pensionRate || 0) / 100)) : 0;
-        const empIns = rec.empInsUse ? Math.floor(totalPay * ((eff.empInsRate || 0) / 100)) : 0;
+        totalPay = roleBase + roleAllowance + perfectAttendance + depAllowance + joinBonus + commissionAmount + currentStockUsage + othersPlus;
+        
+        const taxablePayment = totalPay - currentStockUsage;
+        const healthIns = rec.healthInsUse ? Math.floor(taxablePayment * ((eff.healthInsRate || 0) / 100)) : 0;
+        const withholdingTax = Math.floor((taxablePayment - healthIns) * 0.1021);
+        const nursingIns = rec.nursingInsUse ? Math.floor(taxablePayment * ((eff.nursingInsRate || 0) / 100)) : 0;
+        const pension = rec.pensionUse ? Math.floor(taxablePayment * ((eff.pensionRate || 0) / 100)) : 0;
+        const empIns = rec.empInsUse ? Math.floor(taxablePayment * ((eff.empInsRate || 0) / 100)) : 0;
         const dormRent = rec.dormRentUse ? (eff.dormRent || 0) : 0;
+
         deductionDetails.push({ label: '所得税', amount: withholdingTax });
+        if (absenceDeduction > 0) deductionDetails.push({ label: '欠勤控除', amount: absenceDeduction });
         if (healthIns > 0) deductionDetails.push({ label: '健康保険', amount: healthIns });
         if (nursingIns > 0) deductionDetails.push({ label: '介護保険', amount: nursingIns });
         if (pension > 0) deductionDetails.push({ label: '厚生年金', amount: pension });
         if (empIns > 0) deductionDetails.push({ label: '雇用保険', amount: empIns });
         if (dormRent > 0) deductionDetails.push({ label: '寮費', amount: dormRent });
+        if (currentStockAddition > 0) deductionDetails.push({ label: '寮費ストック積立', amount: currentStockAddition });
+
         ['childSupport', 'deposit', 'moveOutFee', 'dailyAdvance'].forEach(k => {
           const v = parseFloat(rec[k] || 0);
           if (v > 0) deductionDetails.push({ label: { childSupport: '子育て支援金', deposit: '保証金', moveOutFee: '退去費用', dailyAdvance: '日払い' }[k], amount: v });
         });
         totalDed = deductionDetails.reduce((s, d) => s + d.amount, 0);
-        net = totalPay - totalDed;
-        return { account, month, paymentDetails, deductionDetails, totalPay, totalDed, net, workDays, absence, lateness, paidLeave, workHoursLabel };
+        net = Math.max(0, totalPay - totalDed);
+        return { account, month, paymentDetails, deductionDetails, totalPay, totalDed, net, workDays, absence, lateness, paidLeave, workHoursLabel, currentStockBalance, dormRentUse: rec.dormRentUse };
       } else {
         workDays = parseFloat(rec.workingDays || 0);
         const hours = parseFloat(rec.hours || 0);
@@ -975,56 +1130,65 @@ export default function App() {
         deductionDetails.push({ label: '所得税', amount: withholdingTax });
         if (dailyAdvance > 0) deductionDetails.push({ label: '日払い', amount: dailyAdvance });
         totalDed = deductionDetails.reduce((s, d) => s + d.amount, 0) + othersMinus;
-        net = totalPay - totalDed;
-        return { account, month, paymentDetails, deductionDetails, totalPay, totalDed, net, workDays, absence, lateness, paidLeave, workHoursLabel, finalHourly };
+        net = Math.max(0, totalPay - totalDed);
+        return { account, month, paymentDetails, deductionDetails, totalPay, totalDed, net, workDays, absence, lateness, paidLeave, workHoursLabel, finalHourly, currentStockBalance: 0, dormRentUse: false };
       }
     };
 
+    // A4縦で3人分入るように横長・高さ圧縮レイアウト
     const SlipCard = ({ data }) => {
-      const { account, month, paymentDetails, deductionDetails, totalPay, totalDed, net, workDays, absence, lateness, paidLeave, workHoursLabel, finalHourly } = data;
+      const { account, month, paymentDetails, deductionDetails, totalPay, totalDed, net, workDays, absence, lateness, paidLeave, workHoursLabel, finalHourly, currentStockBalance, dormRentUse } = data;
       return (
-        <div className="slip-card bg-white p-6 border border-gray-300 shadow-sm" style={{ width: '100%', maxWidth: '360px', display: 'inline-block', verticalAlign: 'top', margin: '4px', boxSizing: 'border-box' }}>
-          <div className="text-center font-bold text-lg tracking-widest mb-3 underline">給料支払明細書</div>
-          <div className="flex justify-between mb-2 text-sm">
-            <div className="font-bold">{fmtMonth(month)}分</div>
-            <div className="font-bold border-b-2 border-black px-4">{account.name} <span className="text-xs font-normal">殿</span></div>
+        <div className="slip-card bg-white py-4 px-2" style={{ width: '100%', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+          <div className="flex justify-between items-end mb-2">
+            <div className="text-xl font-bold tracking-widest underline">給与支払明細書</div>
+            <div className="flex gap-4 items-end">
+              <div className="font-bold text-sm">{fmtMonth(month)}分</div>
+              <div className="font-bold border-b border-black px-4 text-lg">{account.name} <span className="text-sm font-normal">殿</span></div>
+            </div>
           </div>
-          <div className="mb-2 text-xs">
-            {account.type === '社員' ? (
-              <div className="flex gap-4 flex-wrap">
-                <span>勤務: {workDays}日</span><span>欠勤: {absence}回</span><span>遅刻: {lateness}回</span><span>有給: {paidLeave}回</span>
-              </div>
-            ) : (
-              <div className="flex gap-4 flex-wrap">
-                <span>時給: {(finalHourly || 0).toLocaleString()}円</span><span>日数: {workDays}日</span><span>時間: {workHoursLabel}</span>
+          
+          <div className="mb-2 text-sm flex justify-between bg-gray-50 p-2 border border-gray-200">
+            <div className="flex gap-6">
+              {account.type === '社員' ? (
+                <><span>勤務: {workDays}日</span><span>欠勤: {absence}回</span><span>遅刻: {lateness}回</span><span>有給: {paidLeave}回</span></>
+              ) : (
+                <><span>時給: {(finalHourly || 0).toLocaleString()}円</span><span>日数: {workDays}日</span><span>時間: {workHoursLabel}</span></>
+              )}
+            </div>
+            {dormRentUse && (
+              <div className="font-bold text-teal-800">
+                寮費ストック残高: {currentStockBalance.toLocaleString()} 円
               </div>
             )}
           </div>
-          <div className="flex w-full border-t-2 border-b-2 border-black mb-3">
-            <div className="w-1/2 border-r-2 border-black">
-              <div className="bg-gray-100 text-center font-bold py-0.5 border-b-2 border-black text-xs">支 給</div>
-              <div className="p-1.5 min-h-[120px]">
+          
+          <div className="flex w-full border-2 border-black mb-2 flex-1">
+            <div className="w-1/2 border-r-2 border-black flex flex-col">
+              <div className="bg-gray-100 text-center font-bold py-1 border-b-2 border-black text-sm">支 給</div>
+              <div className="p-2 flex-1 text-sm">
                 {paymentDetails.map((item, i) => (
-                  <div key={i} className="flex justify-between mb-0.5 text-xs"><span>{item.label}</span><span>{item.amount.toLocaleString()}</span></div>
+                  <div key={i} className="flex justify-between mb-1"><span>{item.label}</span><span>{item.amount.toLocaleString()}</span></div>
                 ))}
               </div>
-              <div className="flex justify-between p-1.5 border-t border-black font-bold bg-gray-50 text-xs"><span>合計</span><span>{totalPay.toLocaleString()}</span></div>
+              <div className="flex justify-between p-2 border-t-2 border-black font-bold bg-gray-50 text-sm"><span>支給合計</span><span>{totalPay.toLocaleString()}</span></div>
             </div>
-            <div className="w-1/2">
-              <div className="bg-gray-100 text-center font-bold py-0.5 border-b-2 border-black text-xs">差 引</div>
-              <div className="p-1.5 min-h-[120px]">
+            <div className="w-1/2 flex flex-col">
+              <div className="bg-gray-100 text-center font-bold py-1 border-b-2 border-black text-sm">差 引</div>
+              <div className="p-2 flex-1 text-sm">
                 {deductionDetails.map((item, i) => (
-                  <div key={i} className="flex justify-between mb-0.5 text-xs"><span>{item.label}</span><span>{item.amount.toLocaleString()}</span></div>
+                  <div key={i} className="flex justify-between mb-1"><span>{item.label}</span><span>{item.amount.toLocaleString()}</span></div>
                 ))}
               </div>
-              <div className="flex justify-between p-1.5 border-t border-black font-bold bg-gray-50 text-xs"><span>合計</span><span>{totalDed.toLocaleString()}</span></div>
+              <div className="flex justify-between p-2 border-t-2 border-black font-bold bg-gray-50 text-sm"><span>控除合計</span><span>{totalDed.toLocaleString()}</span></div>
             </div>
           </div>
-          <div className="flex justify-end">
-            <div className="flex items-center text-sm">
-              <span className="font-bold mr-2">差引支給額</span>
-              <div className="border-b-2 border-black px-3 py-0.5 font-bold text-base min-w-[120px] text-right">
-                {net.toLocaleString()} <span className="text-xs">円</span>
+          
+          <div className="flex justify-end mt-1">
+            <div className="flex items-center">
+              <span className="font-bold mr-4 text-base">差引支給額</span>
+              <div className="border-b-2 border-black px-6 py-1 font-bold text-xl min-w-[150px] text-right">
+                {net.toLocaleString()} <span className="text-sm">円</span>
               </div>
             </div>
           </div>
@@ -1034,7 +1198,6 @@ export default function App() {
 
     return (
       <div className="space-y-4">
-        {/* タブ */}
         <div className="no-print bg-white rounded-2xl shadow-sm border border-slate-100 p-4 flex items-center gap-3 flex-wrap">
           {['社員', 'アルバイト'].map(t => (
             <button key={t} onClick={() => { setEmpType(t); setSelectedId(''); }}
@@ -1056,8 +1219,7 @@ export default function App() {
             {filtered.length === 0 && (
               <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-14 text-center text-slate-400">当月の{empType}データがありません</div>
             )}
-            {/* 3人1行レイアウト */}
-            <div className="print-container" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+            <div className="print-container">
               {filtered.map(account => {
                 const data = buildSlipData(account, currentMonth);
                 if (!data) return null;
@@ -1077,7 +1239,7 @@ export default function App() {
               </select>
             </div>
             {selectedId && (
-              <div className="print-container space-y-4">
+              <div className="print-container">
                 {getPast12Months().map(month => {
                   const account = accounts.find(a => a.id === selectedId);
                   if (!account) return null;
@@ -1099,7 +1261,7 @@ export default function App() {
   };
 
   // ═══════════════════════════════════════════════════════════
-  // ⑤ お釣り計算
+  // ⑤ 金種管理
   // ═══════════════════════════════════════════════════════════
   const CashScreen = () => {
     const currentRecords = monthlyRecords[currentMonth] || {};
@@ -1113,15 +1275,19 @@ export default function App() {
         const roleBase = (ms.baseSalary && ms.baseSalary > 0) ? ms.baseSalary : (roleMaster[rec.role || account.role]?.base || 0);
         const roleAllowance = ms.roleAllowances?.[rec.role || account.role] || parseFloat(rec.roleAllowance || 0);
         const absence = parseFloat(rec.absence || 0);
-        const perfectAttendance = absence === 0 ? 30000 : 0;
+        const lateness = parseFloat(rec.lateness || 0);
+        const perfectAttendance = (absence + lateness) >= 1 ? 0 : 30000;
+        const absenceDeduction = absence * 30000;
         const depAllowance = parseFloat(rec.depAllowance || 0);
         let joinBonus = 0;
-        if (account.joinDate && rec.bonusType) {
+        if (account.joinDate) {
           const joinDate = new Date(account.joinDate);
           const cmd = new Date(currentMonth + '-01');
           const md = (cmd.getFullYear() - joinDate.getFullYear()) * 12 + cmd.getMonth() - joinDate.getMonth();
-          if (rec.bonusType === '5万×6ヶ月' && md >= 0 && md < 6) joinBonus = 50000;
-          else if (rec.bonusType === '半年後に30万' && md === 6) joinBonus = 300000;
+          if (md >= 0 && md <= 5) {
+            if (rec.bonusType === '5万×6ヶ月') joinBonus = 50000;
+            else if (rec.bonusType === '半年後に30万' && md === 5) joinBonus = 300000;
+          }
         }
         const commissionAmount = Math.floor((eff.totalCommission || 0) * (parseFloat(rec.commissionPct || 0) / 100));
         let othersPlus = 0, othersMinus = 0;
@@ -1129,19 +1295,24 @@ export default function App() {
           const amt = parseFloat(item.amount || 0);
           if (item.type === '+') othersPlus += amt; else othersMinus += amt;
         });
-        const totalPay = roleBase + roleAllowance + perfectAttendance + depAllowance + joinBonus + commissionAmount + othersPlus;
-        const healthIns = rec.healthInsUse ? Math.floor(totalPay * ((eff.healthInsRate || 0) / 100)) : 0;
-        const withholdingTax = Math.floor((totalPay - healthIns) * 0.1021);
-        const nursingIns = rec.nursingInsUse ? Math.floor(totalPay * ((eff.nursingInsRate || 0) / 100)) : 0;
-        const pension = rec.pensionUse ? Math.floor(totalPay * ((eff.pensionRate || 0) / 100)) : 0;
-        const empIns = rec.empInsUse ? Math.floor(totalPay * ((eff.empInsRate || 0) / 100)) : 0;
+        
+        const currentStockUsage = parseFloat(rec.stockUsage || 0);
+        const totalPay = roleBase + roleAllowance + perfectAttendance + depAllowance + joinBonus + commissionAmount + currentStockUsage + othersPlus;
+        
+        const taxablePay = totalPay - currentStockUsage;
+        const healthIns = rec.healthInsUse ? Math.floor(taxablePay * ((eff.healthInsRate || 0) / 100)) : 0;
+        const withholdingTax = Math.floor((taxablePay - healthIns) * 0.1021);
+        const nursingIns = rec.nursingInsUse ? Math.floor(taxablePay * ((eff.nursingInsRate || 0) / 100)) : 0;
+        const pension = rec.pensionUse ? Math.floor(taxablePay * ((eff.pensionRate || 0) / 100)) : 0;
+        const empIns = rec.empInsUse ? Math.floor(taxablePay * ((eff.empInsRate || 0) / 100)) : 0;
         const dormRent = rec.dormRentUse ? (eff.dormRent || 0) : 0;
         const childSupport = parseFloat(rec.childSupport || 0);
         const deposit = parseFloat(rec.deposit || 0);
         const moveOutFee = parseFloat(rec.moveOutFee || 0);
         const dailyAdvance = parseFloat(rec.dailyAdvance || 0);
-        const totalDed = withholdingTax + healthIns + nursingIns + pension + empIns + dormRent + childSupport + deposit + moveOutFee + dailyAdvance + othersMinus;
-        return totalPay - totalDed;
+        const currentStockAddition = parseFloat(rec.stockAddition || 0);
+        const totalDed = withholdingTax + healthIns + nursingIns + pension + empIns + dormRent + childSupport + deposit + moveOutFee + dailyAdvance + absenceDeduction + currentStockAddition + othersMinus;
+        return Math.max(0, totalPay - totalDed);
       } else {
         const workingDays = parseFloat(rec.workingDays || 0);
         let validReferralsCount = 0;
@@ -1165,16 +1336,15 @@ export default function App() {
         const withholdingTax = Math.floor(totalPay * 0.1021);
         const dailyAdvance = parseFloat(rec.dailyAdvance || 0);
         const totalDed = withholdingTax + dailyAdvance + othersMinus;
-        return totalPay - totalDed;
+        return Math.max(0, totalPay - totalDed);
       }
     };
 
     const staffWithPay = accounts
       .filter(a => currentRecords[a.id])
-      .map(a => ({ account: a, net: Math.max(0, calcNet(a)) }));
+      .map(a => ({ account: a, net: calcNet(a) }));
 
     const grandTotal = staffWithPay.reduce((s, x) => s + x.net, 0);
-    // 各人の支給額を個別に両替して枚数を合算（合計額まとめ両替ではない）
     const breakdown = calcBreakdownByPerson(staffWithPay.map(x => x.net));
 
     return (
@@ -1187,9 +1357,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* 金種SVGアイコン定義 */}
         {(() => {
-          /* ── 紙幣SVG ── */
           const Note10000 = ({ w = 72, h = 36 }) => (
             <svg width={w} height={h} viewBox="0 0 72 36" style={{flexShrink:0,display:'block'}}>
               <rect width="72" height="36" rx="3" fill="#2d6e42"/>
@@ -1238,7 +1406,6 @@ export default function App() {
               <rect x="62" y="3" width="8" height="30" rx="1" fill="#0e2e58" opacity="0.8"/>
             </svg>
           );
-          /* ── 硬貨SVG ── */
           const Coin500 = ({ r = 18 }) => {
             const s = r * 2 + 4;
             return (
@@ -1412,9 +1579,25 @@ export default function App() {
     <>
       <style>{`
         @media print {
-          .no-print { display: none !important; }
-          body { margin: 0; }
-          .slip-card { page-break-inside: avoid; }
+          @page {
+            size: A4 portrait;
+            margin: 0;
+          }
+          body {
+            margin: 0;
+          }
+          .no-print {
+            display: none !important;
+          }
+          .print-container {
+            display: block !important;
+          }
+          .slip-card {
+            height: 33.3vh;
+            page-break-inside: avoid;
+            border: none !important;
+            border-bottom: 1px dashed #ccc !important;
+          }
         }
       `}</style>
       <div className="min-h-screen bg-slate-100 flex">
@@ -1432,7 +1615,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Month chip */}
           <div className="mx-3 mt-4 px-3 py-2.5 bg-slate-800 rounded-xl">
             <p className="text-slate-500 text-xs mb-1">対象月</p>
             <div className="flex items-center justify-between gap-1">
