@@ -139,7 +139,8 @@ export default function App() {
 
   const [settings, setSettings] = useState({
     businessDays: 25, totalCommission: 0, dormRent: 0, dormStockTarget: 0,
-    healthInsRate: 0, nursingInsRate: 0, pensionRate: 0, empInsRate: 0,
+    withholdingTaxRate: 10, reconstructionTaxRate: 0,
+    healthInsRate: 0, nursingInsRate: 0, pensionRate: 0, empInsRate: 0, childSupportRate: 0,
   });
 
   const [accounts, setAccounts] = useState([]);
@@ -200,7 +201,8 @@ export default function App() {
     if (monthlySettings[prev]) return { ...monthlySettings[prev] };
     return {
       businessDays: 25, totalCommission: 0, dormRent: 0, dormStockTarget: 0,
-      healthInsRate: 0, nursingInsRate: 0, pensionRate: 0, empInsRate: 0,
+      withholdingTaxRate: 10, reconstructionTaxRate: 0,
+      healthInsRate: 0, nursingInsRate: 0, pensionRate: 0, empInsRate: 0, childSupportRate: 0,
       baseSalary: 0, roleAllowances: {}, partRoleAllowances: {},
     };
   };
@@ -247,10 +249,13 @@ export default function App() {
         totalCommission: parseFloat(local.totalCommission) || 0,
         dormRent: parseFloat(local.dormRent) || 0,
         dormStockTarget: parseFloat(local.dormStockTarget) || 0,
+        withholdingTaxRate: parseFloat(local.withholdingTaxRate) || 0,
+        reconstructionTaxRate: parseFloat(local.reconstructionTaxRate) || 0,
         healthInsRate: parseFloat(local.healthInsRate) || 0,
         nursingInsRate: parseFloat(local.nursingInsRate) || 0,
         pensionRate: parseFloat(local.pensionRate) || 0,
         empInsRate: parseFloat(local.empInsRate) || 0,
+        childSupportRate: parseFloat(local.childSupportRate) || 0,
         baseSalary: parseFloat(local.baseSalary) || 0,
         roleAllowances: local.roleAllowances || {},
         partRoleAllowances: local.partRoleAllowances || {},
@@ -302,13 +307,16 @@ export default function App() {
           </div>
 
           <div className="mt-7">
-            <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-4">社会保険料率</p>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-4">社会保険・税率設定</p>
             <div className="grid grid-cols-4 gap-4">
               {[
+                { label: '源泉徴収 (%)', name: 'withholdingTaxRate' },
+                { label: '復興特別所得税 (%)', name: 'reconstructionTaxRate' },
                 { label: '健康保険 (%)', name: 'healthInsRate' },
                 { label: '介護保険 (%)', name: 'nursingInsRate' },
                 { label: '厚生年金 (%)', name: 'pensionRate' },
                 { label: '雇用保険 (%)', name: 'empInsRate' },
+                { label: '子育て支援金 (%)', name: 'childSupportRate' },
               ].map(({ label, name }) => (
                 <div key={name}>
                   <label className={lCls}>{label}</label>
@@ -745,19 +753,25 @@ export default function App() {
       const totalPayment = roleBase + roleAllowance + perfectAttendance + depAllowance + joinBonus + commissionAmount + othersPlus;
       
       // 税金・保険料は純粋な「支給合計」ベースで計算
+      const wtRate = ms.withholdingTaxRate ?? settings.withholdingTaxRate ?? 10;
+      const withholdingTax = Math.floor(totalPayment * (wtRate / 100));
+
+      const rtRate = ms.reconstructionTaxRate ?? settings.reconstructionTaxRate ?? 0;
+      const reconstructionTax = draft.reconstructionTaxUse ? Math.floor(totalPayment * (rtRate / 100)) : 0;
+
       const sr = ms.healthInsRate || settings.healthInsRate || 0;
       const healthIns = draft.healthInsUse ? Math.floor(totalPayment * (sr / 100)) : 0;
-      const withholdingTax = Math.floor(totalPayment * 0.1);
       const nursingIns = draft.nursingInsUse ? Math.floor(totalPayment * ((ms.nursingInsRate || settings.nursingInsRate || 0) / 100)) : 0;
       const pension = draft.pensionUse ? Math.floor(totalPayment * ((ms.pensionRate || settings.pensionRate || 0) / 100)) : 0;
       const empIns = draft.empInsUse ? Math.floor(totalPayment * ((ms.empInsRate || settings.empInsRate || 0) / 100)) : 0;
+      const childSupport = draft.childSupportUse ? Math.floor(totalPayment * ((ms.childSupportRate || settings.childSupportRate || 0) / 100)) : 0;
       
       const dormRent = draft.dormRentUse ? (ms.dormRent || settings.dormRent || 0) : 0;
-      const childSupport = parseFloat(draft.childSupport || 0), deposit = parseFloat(draft.deposit || 0);
+      const deposit = parseFloat(draft.deposit || 0);
       const moveOutFee = parseFloat(draft.moveOutFee || 0), dailyAdvance = parseFloat(draft.dailyAdvance || 0);
       
-      // 差引合計の算出（源泉 + 各種保険 + 各種天引き + ストック追加徴収 + その他マイナス - ストック充当）
-      const totalDeduction = withholdingTax + healthIns + nursingIns + pension + empIns + dormRent + childSupport + deposit + moveOutFee + dailyAdvance + currentStockAddition + othersMinus - currentStockUsage;
+      // 差引合計の算出（源泉 + 復興特別所得税 + 各種保険 + 子育て支援金 + 各種天引き + ストック追加徴収 + その他マイナス - ストック充当）
+      const totalDeduction = withholdingTax + reconstructionTax + healthIns + nursingIns + pension + empIns + childSupport + dormRent + deposit + moveOutFee + dailyAdvance + currentStockAddition + othersMinus - currentStockUsage;
       
       // 差引支給額 = 支給合計 - 差引合計
       const netPayment = Math.max(0, totalPayment - totalDeduction);
@@ -765,7 +779,7 @@ export default function App() {
       calc = { 
         attendanceDays: effectiveBizDays - absenceDays, 
         roleBase, roleAllowance, perfectAttendance, depAllowance, joinBonus, commissionAmount, 
-        totalPayment, withholdingTax, healthIns, nursingIns, pension, empIns, dormRent, 
+        totalPayment, withholdingTax, reconstructionTax, healthIns, nursingIns, pension, empIns, childSupport, dormRent, 
         totalDeduction, netPayment, 
         pastStockBalance, currentStockBalance, stockShortfall 
       };
@@ -782,11 +796,17 @@ export default function App() {
       (draft.others || []).forEach(i => { const a = parseFloat(i.amount || 0); i.type === '+' ? othersPlus += a : othersMinus += a; });
       const basePayment = Math.floor(totalHoursDecimal * finalHourly);
       const totalPayment = basePayment + attendanceAllowance + surplusCast + customAttendanceAllowance + othersPlus;
-      const withholdingTax = Math.floor(totalPayment * 0.1);
+      
+      const wtRate = ms.withholdingTaxRate ?? settings.withholdingTaxRate ?? 10;
+      const withholdingTax = Math.floor(totalPayment * (wtRate / 100));
+
+      const rtRate = ms.reconstructionTaxRate ?? settings.reconstructionTaxRate ?? 0;
+      const reconstructionTax = draft.reconstructionTaxUse ? Math.floor(totalPayment * (rtRate / 100)) : 0;
+
       const dailyAdvance = parseFloat(draft.dailyAdvance || 0);
-      const totalDeduction = withholdingTax + dailyAdvance + othersMinus;
+      const totalDeduction = withholdingTax + reconstructionTax + dailyAdvance + othersMinus;
       const netPayment = Math.max(0, totalPayment - totalDeduction);
-      calc = { validReferralsCount, finalHourly, attendanceAllowance, basePayment, totalPayment, withholdingTax, totalDeduction, netPayment };
+      calc = { validReferralsCount, finalHourly, attendanceAllowance, basePayment, totalPayment, withholdingTax, reconstructionTax, totalDeduction, netPayment };
     }
 
     return (
@@ -889,11 +909,15 @@ export default function App() {
                 </div>
               )}
 
+              <div><label className={cLbl}>源泉徴収（自動）</label><input readOnly value={calc.withholdingTax.toLocaleString() + '円'} className={cRO} /></div>
+
               {[
+                { key: 'reconstructionTaxUse', label: '復興特別所得税', val: calc.reconstructionTax },
                 { key: 'healthInsUse', label: '健康保険', val: calc.healthIns },
                 { key: 'nursingInsUse', label: '介護保険', val: calc.nursingIns },
                 { key: 'pensionUse', label: '厚生年金', val: calc.pension },
                 { key: 'empInsUse', label: '雇用保険', val: calc.empIns },
+                { key: 'childSupportUse', label: '子育て支援金', val: calc.childSupport },
               ].map(({ key, label, val }) => (
                 <label key={key} className="flex items-center gap-2 p-2 rounded-lg border border-slate-100 hover:bg-slate-50 cursor-pointer">
                   <input type="checkbox" checked={draft[key] || false} onChange={e => ch(key, e.target.checked)} className="accent-indigo-600 w-3.5 h-3.5" />
@@ -901,8 +925,7 @@ export default function App() {
                   <span className="text-xs font-medium text-slate-500">{(val||0).toLocaleString()}円</span>
                 </label>
               ))}
-              <div><label className={cLbl}>源泉徴収（自動）</label><input readOnly value={calc.withholdingTax.toLocaleString() + '円'} className={cRO} /></div>
-              <div><label className={cLbl}>子育て支援金</label><NumInput value={draft.childSupport} onChange={v => ch('childSupport', v)} className={cInp} /></div>
+              
               <div><label className={cLbl}>保証金</label><NumInput value={draft.deposit} onChange={v => ch('deposit', v)} className={cInp} /></div>
               <div><label className={cLbl}>退去費用</label><NumInput value={draft.moveOutFee} onChange={v => ch('moveOutFee', v)} className={cInp} /></div>
               <div><label className={cLbl}>日払い</label><NumInput value={draft.dailyAdvance} onChange={v => ch('dailyAdvance', v)} className={cInp} /></div>
@@ -944,6 +967,15 @@ export default function App() {
               <div><label className={cLbl}>出勤手当（自由）</label><NumInput value={draft.customAttendanceAllowance} onChange={v => ch('customAttendanceAllowance', v)} className={cInp} /></div>
               <Sec label="差引" />
               <div><label className={cLbl}>源泉徴収（自動）</label><input readOnly value={(calc.withholdingTax||0).toLocaleString() + '円'} className={cRO} /></div>
+              
+              <div className="col-span-3">
+                <label className="flex items-center gap-2 p-2 rounded-lg border border-slate-100 hover:bg-slate-50 cursor-pointer w-1/3">
+                  <input type="checkbox" checked={draft.reconstructionTaxUse || false} onChange={e => ch('reconstructionTaxUse', e.target.checked)} className="accent-indigo-600 w-3.5 h-3.5" />
+                  <span className="text-xs text-slate-700 flex-1">復興特別所得税</span>
+                  <span className="text-xs font-medium text-slate-500">{(calc.reconstructionTax||0).toLocaleString()}円</span>
+                </label>
+              </div>
+
               <div><label className={cLbl}>日払い</label><NumInput value={draft.dailyAdvance} onChange={v => ch('dailyAdvance', v)} className={cInp} /></div>
               <Sec label="その他" />
               <div className="col-span-3 space-y-2">
@@ -1081,25 +1113,33 @@ export default function App() {
         // 合計支給額の算出（ストック充当分は除外）
         totalPay = roleBase + roleAllowance + perfectAttendance + depAllowance + joinBonus + commissionAmount + othersPlus;
         
+        const wtRate = eff.withholdingTaxRate ?? 10;
+        const withholdingTax = Math.floor(totalPay * (wtRate / 100));
+
+        const rtRate = eff.reconstructionTaxRate ?? 0;
+        const reconstructionTax = rec.reconstructionTaxUse ? Math.floor(totalPay * (rtRate / 100)) : 0;
+
         const healthIns = rec.healthInsUse ? Math.floor(totalPay * ((eff.healthInsRate || 0) / 100)) : 0;
-        const withholdingTax = Math.floor(totalPay * 0.1);
         const nursingIns = rec.nursingInsUse ? Math.floor(totalPay * ((eff.nursingInsRate || 0) / 100)) : 0;
         const pension = rec.pensionUse ? Math.floor(totalPay * ((eff.pensionRate || 0) / 100)) : 0;
         const empIns = rec.empInsUse ? Math.floor(totalPay * ((eff.empInsRate || 0) / 100)) : 0;
+        const childSupport = rec.childSupportUse ? Math.floor(totalPay * ((eff.childSupportRate || 0) / 100)) : 0;
         const dormRent = rec.dormRentUse ? (eff.dormRent || 0) : 0;
 
         deductionDetails.push({ label: '所得税', amount: withholdingTax });
+        if (reconstructionTax > 0) deductionDetails.push({ label: '復興特別所得税', amount: reconstructionTax });
         if (healthIns > 0) deductionDetails.push({ label: '健康保険', amount: healthIns });
         if (nursingIns > 0) deductionDetails.push({ label: '介護保険', amount: nursingIns });
         if (pension > 0) deductionDetails.push({ label: '厚生年金', amount: pension });
         if (empIns > 0) deductionDetails.push({ label: '雇用保険', amount: empIns });
+        if (childSupport > 0) deductionDetails.push({ label: '子育て支援金', amount: childSupport });
         if (dormRent > 0) deductionDetails.push({ label: '寮費', amount: dormRent });
         if (currentStockAddition > 0) deductionDetails.push({ label: '寮費ストック積立', amount: currentStockAddition });
         if (currentStockUsage > 0) deductionDetails.push({ label: '寮費ストック充当', amount: -currentStockUsage });
 
-        ['childSupport', 'deposit', 'moveOutFee', 'dailyAdvance'].forEach(k => {
+        ['deposit', 'moveOutFee', 'dailyAdvance'].forEach(k => {
           const v = parseFloat(rec[k] || 0);
-          if (v > 0) deductionDetails.push({ label: { childSupport: '子育て支援金', deposit: '保証金', moveOutFee: '退去費用', dailyAdvance: '日払い' }[k], amount: v });
+          if (v > 0) deductionDetails.push({ label: { deposit: '保証金', moveOutFee: '退去費用', dailyAdvance: '日払い' }[k], amount: v });
         });
         totalDed = deductionDetails.reduce((s, d) => s + d.amount, 0);
         net = Math.max(0, totalPay - totalDed);
@@ -1131,9 +1171,16 @@ export default function App() {
           else { deductionDetails.push({ label: item.name, amount: amt }); othersMinus += amt; }
         });
         totalPay = basePayment + attendanceAllowance + surplusCast + customAttendanceAllowance + othersPlus;
-        const withholdingTax = Math.floor(totalPay * 0.1);
+        
+        const wtRate = eff.withholdingTaxRate ?? 10;
+        const withholdingTax = Math.floor(totalPay * (wtRate / 100));
+
+        const rtRate = eff.reconstructionTaxRate ?? 0;
+        const reconstructionTax = rec.reconstructionTaxUse ? Math.floor(totalPay * (rtRate / 100)) : 0;
+
         const dailyAdvance = parseFloat(rec.dailyAdvance || 0);
         deductionDetails.push({ label: '所得税', amount: withholdingTax });
+        if (reconstructionTax > 0) deductionDetails.push({ label: '復興特別所得税', amount: reconstructionTax });
         if (dailyAdvance > 0) deductionDetails.push({ label: '日払い', amount: dailyAdvance });
         totalDed = deductionDetails.reduce((s, d) => s + d.amount, 0) + othersMinus;
         net = Math.max(0, totalPay - totalDed);
@@ -1309,19 +1356,24 @@ export default function App() {
         const currentStockUsage = parseFloat(rec.stockUsage || 0);
         const totalPay = roleBase + roleAllowance + perfectAttendance + depAllowance + joinBonus + commissionAmount + othersPlus;
         
+        const wtRate = eff.withholdingTaxRate ?? 10;
+        const withholdingTax = Math.floor(totalPay * (wtRate / 100));
+
+        const rtRate = eff.reconstructionTaxRate ?? 0;
+        const reconstructionTax = rec.reconstructionTaxUse ? Math.floor(totalPay * (rtRate / 100)) : 0;
+
         const healthIns = rec.healthInsUse ? Math.floor(totalPay * ((eff.healthInsRate || 0) / 100)) : 0;
-        const withholdingTax = Math.floor(totalPay * 0.1);
         const nursingIns = rec.nursingInsUse ? Math.floor(totalPay * ((eff.nursingInsRate || 0) / 100)) : 0;
         const pension = rec.pensionUse ? Math.floor(totalPay * ((eff.pensionRate || 0) / 100)) : 0;
         const empIns = rec.empInsUse ? Math.floor(totalPay * ((eff.empInsRate || 0) / 100)) : 0;
+        const childSupport = rec.childSupportUse ? Math.floor(totalPay * ((eff.childSupportRate || 0) / 100)) : 0;
         const dormRent = rec.dormRentUse ? (eff.dormRent || 0) : 0;
-        const childSupport = parseFloat(rec.childSupport || 0);
         const deposit = parseFloat(rec.deposit || 0);
         const moveOutFee = parseFloat(rec.moveOutFee || 0);
         const dailyAdvance = parseFloat(rec.dailyAdvance || 0);
         const currentStockAddition = parseFloat(rec.stockAddition || 0);
         
-        const totalDed = withholdingTax + healthIns + nursingIns + pension + empIns + dormRent + childSupport + deposit + moveOutFee + dailyAdvance + currentStockAddition + othersMinus - currentStockUsage;
+        const totalDed = withholdingTax + reconstructionTax + healthIns + nursingIns + pension + empIns + childSupport + dormRent + deposit + moveOutFee + dailyAdvance + currentStockAddition + othersMinus - currentStockUsage;
         return Math.max(0, totalPay - totalDed);
       } else {
         const workingDays = parseFloat(rec.workingDays || 0);
@@ -1343,9 +1395,15 @@ export default function App() {
           if (item.type === '+') othersPlus += amt; else othersMinus += amt;
         });
         const totalPay = Math.floor(totalHoursDecimal * finalHourly) + attendanceAllowance + surplusCast + customAttendanceAllowance + othersPlus;
-        const withholdingTax = Math.floor(totalPay * 0.1);
+        
+        const wtRate = eff.withholdingTaxRate ?? 10;
+        const withholdingTax = Math.floor(totalPay * (wtRate / 100));
+
+        const rtRate = eff.reconstructionTaxRate ?? 0;
+        const reconstructionTax = rec.reconstructionTaxUse ? Math.floor(totalPay * (rtRate / 100)) : 0;
+
         const dailyAdvance = parseFloat(rec.dailyAdvance || 0);
-        const totalDed = withholdingTax + dailyAdvance + othersMinus;
+        const totalDeduction = withholdingTax + reconstructionTax + dailyAdvance + othersMinus;
         return Math.max(0, totalPay - totalDed);
       }
     };
